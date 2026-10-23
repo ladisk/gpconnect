@@ -58,8 +58,18 @@ STATUS = [
 ]
 
 
-def status_message(line: str, elapsed: float) -> str | None:
+#: Lines after which the tunnel carries traffic, and the line after which it
+#: does not. Between the two, a fresh HTTPS connection is only a HIP check
+#: (openconnect renews the report periodically) and says nothing about the tunnel.
+TUNNEL_UP = ("ESP session established", "Failed to connect ESP tunnel", "Set up UDP failed")
+TUNNEL_DOWN = "detected dead peer"
+HTTPS_CONNECTED = "Connected to HTTPS on"
+
+
+def status_message(line: str, elapsed: float, tunnel_up: bool = False) -> str | None:
     """Translate one openconnect output line into a gpconnect status message."""
+    if tunnel_up and HTTPS_CONNECTED in line:
+        return None
     for marker, message in STATUS:
         if marker in line:
             seconds = round(elapsed)
@@ -139,9 +149,14 @@ def run_openconnect(portal: str, auth: dict, tls: Tls, gateway: str | None,
                                 stderr=subprocess.STDOUT, text=True, bufsize=1)
         proc.stdin.write(cookie + "\n")
         proc.stdin.close()
+        tunnel_up = False
         for line in proc.stdout:
             sys.stdout.write(line)
-            message = status_message(line, time.monotonic() - start)
+            message = status_message(line, time.monotonic() - start, tunnel_up)
+            if any(m in line for m in TUNNEL_UP):
+                tunnel_up = True
+            elif TUNNEL_DOWN in line:
+                tunnel_up = False
             if message:
                 log(message)
         return proc.wait() or 0

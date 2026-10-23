@@ -172,3 +172,47 @@ def test_https_fallback_is_reported_in_minutes():
 
 def test_ordinary_lines_are_not_reported():
     assert status_message("Got CONNECT response: HTTP/1.1 200 OK", 1) is None
+
+
+def run_with_output(monkeypatch, lines):
+    """Feed openconnect output lines through run_openconnect; return the status lines logged."""
+    class FakeProc:
+        class stdin:
+            write = close = staticmethod(lambda *_: None)
+        stdout = iter(line + "\n" for line in lines)
+        wait = staticmethod(lambda: 0)
+
+    logged: list[str] = []
+    monkeypatch.setattr("gpconnect.vpn.find_openconnect", lambda: "/usr/sbin/openconnect")
+    monkeypatch.setattr("gpconnect.vpn.subprocess.Popen", lambda *_a, **_k: FakeProc())
+    monkeypatch.setattr("gpconnect.vpn.log", logged.append)
+    run_openconnect("vpn.example.org", AUTH, TLS, None, [], elevate="none")
+    return [m for m in logged if m.startswith(("connected to", "tunnel ready", "link lost"))]
+
+
+HTTPS_UP = "Connected to HTTPS on vpn.example.org with ciphersuite (TLS1.2)-(ECDHE)"
+
+
+def test_hip_check_after_ready_does_not_report_waiting(monkeypatch):
+    status = run_with_output(monkeypatch, [
+        HTTPS_UP,
+        "ESP session established with server",
+        "GlobalProtect HIP check due",
+        "SSL negotiation with vpn.example.org",
+        HTTPS_UP,
+    ])
+    assert status == ["connected to the gateway; waiting for the data tunnel (ESP over UDP)",
+                      "tunnel ready over ESP after 0 s"]
+
+
+def test_reconnect_after_link_loss_reports_waiting_then_ready(monkeypatch):
+    status = run_with_output(monkeypatch, [
+        HTTPS_UP,
+        "ESP session established with server",
+        "ESP detected dead peer",
+        HTTPS_UP,
+        "ESP session established with server",
+    ])
+    assert [m.split(";")[0].split(" after")[0] for m in status] == [
+        "connected to the gateway", "tunnel ready over ESP",
+        "link lost", "connected to the gateway", "tunnel ready over ESP"]
